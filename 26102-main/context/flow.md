@@ -1,0 +1,250 @@
+# Flow — MPLADS Sentinel (SIH26102)
+
+> HOW the app works. Update when functions, components, routes, APIs, or flows change. Stale diagrams are bugs.
+
+## Overview
+
+An officer opens **Overview**, sees what needs attention, drills into the **Works** queue, opens a **Work dossier** (financials, progress, explained anomalies, evidence), asks the **AI copilot**, and records a **decision** (Verified / Dismissed / Action Required). Prototype runs on bundled mock data shaped like future server responses; backend/ML slots in behind identical signatures.
+
+## Architecture diagram
+
+```mermaid
+graph TD
+    subgraph Client [TanStack Start SSR]
+        Shell[dashboard/route.tsx<br/>sidebar + header + Outlet]
+        O[/overview/]
+        W[/works/]
+        D[/works/:workId dossier/]
+        AI[/ai copilot/]
+        Shell --> O & W & D & AI
+    end
+    subgraph Server [createServerFn in src/server/]
+        API[mplads fns:<br/>works / anomalies / evidence / decisions / ai.chat]
+    end
+    subgraph Data
+        Mock[-components/data.ts<br/>prototype]
+        DB[(DB TBD<br/>+ anomaly engine)]
+    end
+    O & W & D & AI --> API
+    API --> Mock
+    Mock -.->|same shapes| DB
+```
+
+## User flows
+
+### Flow: Morning triage
+**Goal**: know what needs attention today. **Steps**: Overview KPIs + risk map → high-priority queue → click top case → dossier. Map rule (ADR-035): hovering ANY district shows `District, State` plus `N works · M high-risk` or `no works in demo sample` — never a bare grey polygon (34 district-less remainder polygons resolve to their state name + that state's work counts); clicking an empty district filters the queue to its honest All-clear card (one click clears).
+
+```mermaid
+flowchart LR
+    A([Officer opens /overview]) --> B[Scans KPIs + risk map]
+    B --> C[Opens priority queue]
+    C --> D[Clicks case → /works/:workId]
+```
+
+### Flow: Investigation → decision
+**Goal**: verify a flag and record the outcome. **Steps**: dossier tabs (financials/progress/anomalies/evidence) → AI question → set status + note → activity log entry.
+
+```mermaid
+flowchart LR
+    A([Dossier]) --> B[Reads explained anomaly]
+    B --> C[Checks evidence]
+    C --> D[Asks AI copilot]
+    D --> E{Decision}
+    E --> F[Verified / Dismissed / Action Required]
+    F --> G[Activity log]
+```
+
+### Flow: Evidence upload
+**Goal**: attach supporting records to a work. **Steps**: dossier Evidence tab → upload (validated form) → file appears in grid/list → linked to anomaly context.
+
+## Request / response flows
+
+### Prototype (current): dossier load
+```mermaid
+sequenceDiagram
+    participant U as Officer
+    participant R as works/:workId route
+    participant C as -components (data.ts mock)
+    U->>R: opens work
+    R->>C: import mock Work + Anomaly[] + Evidence[]
+    C-->>R: typed data (Zod shapes)
+    R-->>U: rendered dossier
+```
+
+### Overview on 010-api-fallback: backend-first, seed-fallback
+```mermaid
+sequenceDiagram
+    participant U as Officer
+    participant R as overview route loader
+    participant H as probeBackend (single-flight)
+    participant A as FastAPI /api/v1
+    participant M as Seed (mplads-mock)
+    U->>R: opens /dashboard/overview
+    R->>H: GET /healthz (≤1.5s, once per visit)
+    alt healthy
+        R->>A: kpis + works + anomalies (parallel, demo-JWT)
+        alt all 200 + Zod green → render live
+        else any failure → M-->>R: seed → render
+        end
+    else unhealthy
+        R->>M: seed (zero data fetches attempted)
+        M-->>R: instant render
+    end
+```
+
+### Target (backend built): anomaly-flagged works
+```mermaid
+sequenceDiagram
+    participant U as Officer
+    participant R as Route loader
+    participant S as createServerFn anomalies.list
+    participant E as Anomaly engine
+    participant D as Database
+    U->>R: opens /works?filter=high-risk
+    R->>S: validated query (Zod)
+    S->>E: score works vs peer groups
+    E->>D: read sanctions/expenditure/progress
+    D-->>E: rows
+    E-->>S: flags + peer stats + reasons
+    S-->>R: Anomaly[]
+    R-->>U: queue with explanations
+```
+
+### Backend (BUILT on 009-backend-foundation): FastAPI behind the server fns
+```mermaid
+sequenceDiagram
+    participant F as TanStack server fn
+    participant A as FastAPI /api/v1
+    participant D as Postgres (nirikshan)
+    participant Det as anomalies/engine (pandas, rules-1.0)
+    Note over F: Bearer JWT (HS256, role+scope claims)
+    F->>A: GET /works?lens=high-risk (Zod-validated query)
+    A->>A: RBAC scope predicate (district/state/ministry)
+    A->>D: SELECT works LEFT JOIN worst anomaly
+    D-->>A: rows
+    A-->>F: { items: WorkRow[], total, page, pageSize }
+    Note over Det: ingest + POST /detectors/recompute:<br/>5 pandas rules → Anomaly rows + signals<br/>(compute+store, then analytics version bump)
+```
+
+Backend contract docs: `context/backend/README.md` (architecture/stack/RBAC),
+`data-model.md` (Postgres), `api-reference.md` (every endpoint + JSON),
+`anomaly-engine.md` (5 detector formulas), `analytics-cache.md` (pandas pipeline + versioned
+lru_cache read models), `structure.md` (feature-first code layout),
+`seed-generator.md` (mulberry32 port, parity test). Per-feature backend specs sit beside each
+frontend spec: `Feature_docs/01-login/backend.md` … `05-ai-copilot/backend.md`.
+Do not implement backend endpoints, schemas, or detectors that contradict these files —
+amend them via ADR instead.
+
+### Backend code structure (BUILT — `structure.md` is the law)
+```
+app/features/<feature>/{router,service,repo,schemas}.py   # router → service → repo, one direction
+app/core/{config,security,db}.py   app/common/{errors,pagination,caching}.py
+app/features/anomalies/engine/    # pipeline + 5 pure pandas detector fns
+```
+Layers: router (controller, ≤15 lines, exactly one service call) → service (business logic,
+Pydantic in/out, never Pony entities) → repo (the only Pony-speaking layer) → entities
+(`core/db.py`). Money on the wire and in frames is integer rupees (`*_rs` / `*Rs`, `unit: "₹"`;
+medians round to ₹10k via `round_10k`); ratios are unit-invariant. Analytics: detectors compute+store at ingest; geo/queue/notifications/peer
+read models are cached behind a version tag (bumped on recompute/mutation) + 300 s TTL;
+works list + dossier are deliberately never cached. Auth: Bearer JWT (HS256, 1 h) with
+role+scope claims; scope predicates applied in repo queries; writes 403 out-of-scope,
+reads 404.
+
+## Function call map
+
+### Dossier (BUILT + extended on 006)
+```
+/works/:workId (route.tsx, composes)
+  ├─ <WorkSummary/>            (header: IDs, status badge, amounts)
+  ├─ <FinancialsCard/>         (finance/ donor: KPI cards + recharts line)
+  ├─ <ProgressCard/>           (meters + timeline)
+  ├─ <AnomalyExplainer/>       (NEW: peer N, median vs actual, corroborating signal)
+  ├─ <EvidenceGrid/>           (file-manager/ donor: grid/list + upload dialog)
+  ├─ <ActivityTimeline/>       (invoice-style list)
+  ├─ <DecisionBar/>            (Verified/Dismissed/Action Required + notes form)
+  └─ <ContextualAI/>           (chat/ donor: bubble thread + tool cards)
+```
+Extended: KPI strip (sanctioned/spent/progress/stall/flags/labour) + map/tender command row above tabs; tender & execution block (holder/awarder/dept/labour/demanded-vs-elapsed), `WorkLocationMap` (single-pin copy of india-risk-map), spent/balance/returned strip, duplicate overlap verdict, enriched flags (peer table, evidence count, UC status). Inline dossier assistant removed — Ask-AI buttons dispatch `mplads:ask-ai` to the floating page-assistant popover. Global `<PageAssistant/>` floating toggle mounted in dashboard shell (page-context scripted answers).
+
+### Overview (to build)
+```
+ /overview (route.tsx, composes)
+   ├─ <KpiStrip/>               (default/ donor: metric-cards)
+   ├─ <IndiaRiskMap/>           (logistics/shipment-route-map donor + India TopoJSON TO ADD)
+   └─ <PriorityQueue/>          (tasks/crm table donor: columns/schema/table, top-N)
+```
+Built (SPEC 02 + ADR-035): `IndiaRiskMap` reads `DistrictSlice[]` + `districtLabel()` (every polygon named, 3-tier tooltip, `No works in sample` legend); money renders via `formatMoneyRs` (₹L/₹Cr adaptive); queue top-8 flagship-first over 144 works / 24 flags.
+
+### Works (to build)
+```
+/works (route.tsx, composes)
+  └─ <WorksTable/>             (crm opportunities-table donor + tasks toolbar/filters)
+       └─ row click → /works/:workId
+```
+
+## Route map
+
+| Route | Source | Purpose |
+|-------|--------|---------|
+| `/auth/v1|v2/login|register` | **v2 is default; v1 routes are redirect shims to v2** (ADR-023) | Officer sign-in (valid-shaped credentials → demo cookie session → `/dashboard/overview` or `?redirect=`) |
+| `/` and `/dashboard` | redirect (SPEC 01) | Entry → `/dashboard/overview`, zero clicks |
+| `/dashboard/default` etc. | template (donor only) | Reference screens — NOT in MVP nav |
+| `/overview` | **to build** | KPIs + map + priority queue |
+| `/dashboard/overview` | stub (SPEC 01) → SPEC 02 builds the queue here | Entry landing inside the dashboard shell |
+| `/dashboard/overview` | **BUILT (SPEC 02)**: `KpiStrip` + `IndiaRiskMap` + `PriorityQueue` (?state= two-way filter, role scoping) | Morning triage |
+| `/works` | **BUILT (SPEC 03)** at `/dashboard/works`: full ledger (URL `?lens=&state=&district=&type=&q=`, 10-col table, pagination) | Search/filter/sort works |
+| `/works/:workId` | **BUILT (SPEC 04 + 006 extension)** at `/dashboard/works/$workId`: 6 tabs (overview/financials/progress/anomalies/evidence/activity), tender block, map pin, money strip, duplicate verdict, sticky decision bar, contextual AI | Dossier |
+| Adopted (006, in-place relabel on mock data) | `finance` → fund flow · `analytics` → performance · `tasks` → verification queue · `calendar` → deadlines (56 derived events) · `file-manager` → documents library · `invoice` → UC tracking | Officer workflow pages |
+| Sidebar nav | single MPLADS group: Overview/Works/Fund Flow/Performance/Verifications/Deadlines/Documents/UC Tracking (006) + AI Copilot + Notifications + Settings (ADR-023) | Discoverability |
+| `/ai` | **to build** on `(main)/chat/` | Global copilot |
+| Sidebar nav | `navigation/sidebar/sidebar-items.ts` | Replace groups with MVP nav (Overview/Works/AI + dossier via click) |
+
+## API endpoints (server functions)
+
+| Function | Input (Zod) | Output | Today |
+|----------|-------------|--------|-------|
+| `overview.bundle` | — (ministry demo login server-side) | `{ ok, kpis, rows, anomalies }` → queue + geo + KPIs | **live API first, seed fallback** (`010-api-fallback`; probe once per visit, `{ ok: false }` → seed, never throws) |
+| `works.list` | filters/search/sort/page | Work[] + total | mock `data.ts` |
+| `works.get` | workId | Work detail | mock |
+| `anomalies.list` | workId \| filters | Anomaly[] (+peer stats) | precomputed mock flags |
+| `evidence.list/upload` | workId / file+meta | Evidence[] | local records |
+| `decisions.record` | workId, status, note | Activity entry | in-memory |
+| `session.signIn/signOut` | email (Zod-validated form) | `mplads_session` + `mplads_officer` cookies (7d) | cookie store, prototype |
+| `notifications.list` | prefs filter | derived attention items (flags/stalls/UC/overdue) | mock-derived, read-state local |
+| `ai.chat` | message + page context | answer + tool calls | to design (tool layer: getWork, comparePeers, explainFlag, searchWorks) |
+
+### Backend endpoints (BUILT v1 — full detail in context/backend/api-reference.md; 23 routes green under contract tests)
+
+| FastAPI endpoint | Replaces (frontend mock) | Notes |
+|---|---|---|
+| `POST /auth/login` · `/auth/logout` · `GET /auth/me` | prototype cookie session | JWT + RBAC; demo officers ministry/state-mp/district-bhopal |
+| `GET /works` | works ledger mock rows | lens/state/district/type/q/status + sort + pagination; scope in SQL |
+| `GET /works/{id}` · `/works/{id}/dossier` · `/works/{id}/peers` | dossier-data.ts bundle | dossier = work+anomalies+evidence+activity+decision in one call; `peers` is a separate REAL (type, state) n≥8 computation — seed peer stats are demo fiction (ADR-031) |
+| `GET /anomalies` · `GET /anomalies/{id}` | anomalies mock | filters workId/severity/kind; parity-pinned A-1 |
+| `POST /detectors/recompute` | — (new) | ministry only; rules-1.0; replace-in-transaction |
+| `GET/POST /works/{id}/evidence` · `GET /evidence/{id}/file` | evidence mock + localStorage upload | multipart upload; demo rows have no stored file |
+| `POST /works/{id}/decision` · `GET /works/{id}/activity` | localStorage decisions | decision+activity appended transactionally |
+| `GET /notifications` | notifications data.ts derivation | exact port of derivation; read-state stays client-side |
+| `GET /overview/kpis` · `/overview/geo` · `/overview/queue` | MPLADS_KPIS/geoRollup/queue | KPIs = scheme-snapshot constants until real ingest |
+| `GET /copilot/search|compare/{id}|explain/{id}|missing/{id}` | copilot-brain.ts tool fns | deterministic tools; NO /ai/chat until the LLM decision |
+| (all of the above) | — | per-feature backend specs now live beside each frontend spec: `Feature_docs/01-login/backend.md` … `05-ai-copilot/backend.md`; derivation rules per screen (KPI/geo/queue, lens semantics, dossier bundle, decision transaction) are documented there |
+
+## State flow
+
+1. Route loaders/server fns return Zod-typed data (mock today, DB later — same shapes).
+2. Session: dashboard `beforeLoad` requires `mplads_session` cookie, else redirect to `/auth/v2/login?redirect=`; auth routes bounce signed-in officers to overview; `useSessionStore` hydrates email from the dashboard loader (prototype cookie, not real security).
+2. Role lens: header `RoleSwitcher` → `useRoleStore` (`src/stores/role/`) + `mplads_role` cookie (7d); dashboard loader hydrates the store; queue/map read role as a scope preset (Ministry = all 40, the first-paint default; State = MP; District = Bhopal).
+2. Dossier/AI conversation state: local component state first; promote to zustand store only when cross-route need is proven.
+3. Preferences (theme/layout) persist via existing cookie-backed server fns — untouched.
+
+## Update protocol (MANDATORY)
+
+Update this file when any of the following change:
+
+- [ ] New, renamed, or removed function / component / hook / route
+- [ ] Call chain between functions changed
+- [ ] New user flow or a change to an existing flow
+- [ ] New or removed API endpoint
+- [ ] New dependency in a call chain (library, service)
+- [ ] State management approach changed
