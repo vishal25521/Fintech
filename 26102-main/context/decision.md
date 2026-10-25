@@ -35,6 +35,7 @@
 
 | ID | Date | Decision | Status | Affects |
 |----|------|----------|--------|----------|
+| ADR-037 | 2026-10-25 | Local composed-stack run verified: manual Alembic + seed, runtime `uploads` chown; compose bootstrap gaps recorded, permanent fixes await approval | Accepted | docker-compose.yml, Dockerfile, context/flow.md, context/progress-tracker.md |
 | ADR-036 | 2026-09-24 | District-less polygons resolve to state name + state counts; clicks stay district-only | Accepted | india-geo.ts, overview data.ts/india-risk-map.tsx/route.tsx |
 | ADR-035 | 2026-09-24 | Map empty-states + 144-work sample + full rupee migration (contract, seed, entities, engine, UI, docs); supersedes ADR-034 lane + bumps 010 pageSize 100→200 | Accepted | mplads-schema/mock, overview/*, india-geo, server/mplads, backend seed/db/engine/tests, alembic 0002, all backend docs, Feature_docs 00–05 |
 | ADR-034 | 2026-09-24 | Backend money migrates lakh-float → rupee-int (wire `*Rs` ints, `unit "₹"`, `round_10k` medians, ₹10L guard = 1000000); sibling worker owns entities/helpers/seed | Accepted (lane record; completed end-to-end by ADR-035) | backend/app/features/{works,anomalies,overview}/**, engine/*, tests/test_{detectors,contract_*} |
@@ -90,6 +91,16 @@
 ---
 
 ## Decision Entries
+
+### ADR-037: Local composed stack verified — manual migrate/seed + runtime uploads chown
+- **Date**: 2026-10-25
+- **Status**: Accepted
+- **Context**: Phase 2's last step was "verify the demo end-to-end on `docker compose up`". On Windows/Docker Desktop the stack starts cleanly (`postgres` 16, `api` on 8000), but compose runs neither Alembic nor the demo seed: `/healthz` is green while data routes 500 until the schema exists. Evidence upload then failed with `PermissionError: [Errno 13] Permission denied: 'uploads/<hex>.pdf'` — the named `uploads` volume is created root-owned, while the API process runs as `appuser` (uid 10001).
+- **Options considered**: Bake `alembic upgrade head` + seed into the image entrypoint/compose command (rejected for now — a permanent bootstrap change needs explicit approval plus an idempotency rule for re-seeds); run the API as root or chown in the Dockerfile (rejected for now — same approval gate, weaker runtime posture); manual `docker compose exec` migrate/seed + one-off runtime `chown` (chosen — zero code change, reproducible, leaves the repo clean).
+- **Decision**: Verified local run path: `docker compose up -d --build postgres api` → `docker compose exec -T api uv run --no-sync alembic upgrade head` → `docker compose exec -T api env NIRIKSHAN_SEED_DEMO=force uv run --no-sync python -m app.seed.insert` (demo refresh only) → `docker compose exec -T -u root api chown -R appuser:appuser /app/uploads` (once per fresh volume) → frontend `npm install --no-audit --no-fund && npm run dev` (Vite on 3000). Smoke suite passed **13/13**: health, ministry login, KPIs (28,410 / 214), 144 works, 24 anomalies, pinned W-1014 dossier (peerN 18, median 7,800,000, actual 19,000,000), 128 notifications, copilot search, evidence upload + download, decision + activity write, SSR login/overview/works. After the write tests the DB was force-reseeded to pristine (144 works / 24 anomalies / 6 evidence / 65 activities / 0 decisions / 3 officers), smoke uploads deleted, and the API restarted to clear versioned read-model caches.
+- **Why**: The docs-first protocol forbids unapproved code edits; the demo is fully verifiable with existing images, and keeping the workaround at runtime avoids baking demo-only seed behavior into normal startup. The two gaps are real product decisions (when to migrate, whether to auto-seed, volume ownership), not typos.
+- **Consequences**: A fresh clone still needs the four manual steps; `uploads` ownership must be re-fixed when the named volume is recreated; compose stays non-self-bootstrapping until an approved fix lands (candidate: start-command `alembic upgrade head`, `NIRIKSHAN_SEED_DEMO` as the opt-in seed switch, and `mkdir -p /app/uploads && chown appuser:appuser /app/uploads` in the Dockerfile). No source code changed in this run.
+- **Affects**: `backend/docker-compose.yml`, `backend/Dockerfile` (future fix), `context/flow.md`, `context/progress-tracker.md`.
 
 ### ADR-036: District-less polygons resolve to state name + state counts (Unknown-area fix)
 - **Date**: 2026-09-24

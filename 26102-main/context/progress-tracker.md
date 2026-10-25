@@ -4,16 +4,18 @@ Update this file after every meaningful implementation change.
 
 ## Current Phase
 
-**Phase 2 — Backend implemented (52 tests green); next: frontend mock→real swap**
+**Phase 2 — Backend implemented and composed stack verified end-to-end; next: finish the frontend mock→real swap**
 
-MPLADS anomaly-detection workspace for SIH 2026 (MoSPI). Frontend shell runs on mock; FastAPI + Postgres backend implemented per the docs-first specs on `009-backend-foundation`.
+MPLADS anomaly-detection workspace for SIH 2026 (MoSPI). Frontend shell runs on mock; FastAPI + Postgres backend implemented per the docs-first specs on `009-backend-foundation`; the composed Docker demo passed a 13-check smoke run on 2026-10-25.
 
 ## Current Goal
 
-Swap the frontend server-fn bodies to the real API one call site at a time (keeping the Zod contract green), then verify the demo end-to-end on `docker compose up`.
+Swap the remaining frontend server-fn bodies (Works ledger + Dossier) to the real API one call site at a time, keeping the Zod contract green. Composed-stack demo verified end-to-end 2026-10-25.
 
 ## Completed
 
+- **Composed stack verified end-to-end on Docker (2026-10-25)** — `docker compose up -d --build postgres api` (Postgres 16 on 5432, FastAPI on 8000) plus the Vite dev server on 3000; migrations + demo seed run manually inside the API container, then a **13/13 smoke suite** passed: health, ministry login, KPIs (28,410 / 214), 144 works, 24 anomalies, pinned W-1014 dossier (peerN 18, median 7,800,000, actual 19,000,000), 128 notifications, copilot search, evidence upload + download, decision + activity write, and SSR login/overview/works. Pristine seed restored afterward (144 works / 24 anomalies / 6 evidence / 65 activities / 0 decisions / 3 officers), smoke uploads removed, API restarted to clear read-model caches. Two compose gaps found: no auto-migrate/seed and a root-owned `uploads` volume blocking evidence writes for `appuser`; a runtime `chown` workaround was used and permanent fixes **await approval** (ADR-037).
+- **Header GitHub link repointed (2026-10-25)** — dashboard header GitHub icon now opens `https://github.com/vishal25521` (was the old `aditya452007/26102` repo URL); aria-label updated to "Open GitHub profile". Root `package.json` `repository`/`bugs`/`homepage` URLs repointed to the same profile. No route/flow impact.
 - **Map "Unknown area" fix (2026-09-24, UNMERGED)** — page-feedback bug: 34/760 district features carry no `district` prop (state remainder polygons), so hover showed `Unknown area`. Now `districtLabel()` falls back to the state name, and district-less polygons show + color by that state's work counts (`scopedStateGeo`, wired through `getOverviewData*` → `route.tsx` → `IndiaRiskMap states` prop); clicks stay district-only (no broken `?district=` filters). Zero-work states honestly read `State · no works in demo sample`. Verify: tsc zero-new, throwaway tsx check over all 760 polygons (0 unknown, state rollup = 144, script deleted).
 - **Map empty-states + 144-work sample + rupee migration, verified end-to-end (2026-09-24, UNMERGED)** — SPEC rev 2 (user-approved): (1) map never blank — `districtLabel()` helper + 3-tier tooltips (`District, State · N works · M high` / `· no works in demo sample` / `Unknown area`), legend `No works in sample`, empty-district click filters queue to the honest All-clear card; (2) 144 works (12/district, W-1001..W-1144) + 24 flags (8/9/7), flagship W-1014 pinned, storage key → `mplads-demo-v2`; (3) integer rupees everywhere — Zod `*Rs int` + `unit "₹"`, `formatMoneyRs` adaptive (₹78.0L / ₹1.90 Cr), Pony `BIGINT`, Alembic `0002_rupees`, engine `round_10k` medians + ₹10L guard, KPIs rescaled (28,410 / 9,120 / 1,140 / 214 / ₹128.40 Cr), `pageSize` cap 100→200, fixture regenerated; docs synced (data-model, seed-generator, api-reference, anomaly-engine, analytics-cache, structure, implementation-plan, verification-plan, Feature_docs 00–05). Verify: parity 8/8 + detectors 7/7 green, **full suite 52 passed** on live docker postgres (0001→0002 migrated clean), `tsc` zero-new (4 pre-existing template errors), rg zero lakh-refs, biome noise proven pre-existing on untouched files. 010 entry note: its `pageSize=100` is now 200.
 - **010 backend-first overview with seed fallback on `010-api-fallback` (2026-09-19, UNMERGED)** — overview page now probes `GET /healthz` once per visit (single-flight, 1.5 s timeout) and, when healthy, serves live KPIs + works ledger (`pageSize=100` → 200 under ADR-035) + anomalies (`limit=200`) through Zod-validated server fns (`admin-dashboard/src/server/mplads/`); any probe/fetch/validation failure returns `{ ok: false }` and the route renders the existing seed derivation instantly — no loader error, no per-API retry storm. Server autheds once as the demo ministry officer (client role lens still filters locally). New: `api-client.ts` (timeout fetch, probe, cached demo login, 401 retry-once), `overview.ts` (bundle server fn), generalized `overview/-components/data.ts` (`QueueWork` pick, injectable flags), optional-kpis `KpiStrip`. Verify: `tsc --noEmit` zero-new (4 pre-existing only), `biome lint` clean on all 5 touched files. Next: same pattern for Works/Dossier.
@@ -52,7 +54,7 @@ Swap the frontend server-fn bodies to the real API one call site at a time (keep
 ## Next Up
 
 1. Roll the 010 fallback pattern to Works ledger + Dossier bundle (same probe + `{ ok: false }` → seed law), keeping the Zod contract test green
-2. Build the API Docker image (`docker compose up api`) and smoke-test the composed stack end-to-end
+2. **Awaiting approval**: permanent compose bootstrap — run `alembic upgrade head` on start, make `NIRIKSHAN_SEED_DEMO` the opt-in seed switch (never force reseed on every boot), and create/chown `/app/uploads` in the Dockerfile so evidence uploads work for `appuser`
 3. Optionally sync `context/backend/api-reference.md` for the two as-built deltas (dossier has no `peers` block; peers/recompute are real computations — ADR-031)
 4. Later: real eSAKSHI ingest (`WorkIn`), scheduled recompute job, LLM behind the copilot tool endpoints
 

@@ -151,6 +151,41 @@ works list + dossier are deliberately never cached. Auth: Bearer JWT (HS256, 1 h
 role+scope claims; scope predicates applied in repo queries; writes 403 out-of-scope,
 reads 404.
 
+## Local composed run (verified 2026-10-25)
+
+Postgres 16 (`localhost:5432`) + FastAPI (`http://localhost:8000`) from `backend/docker-compose.yml`,
+frontend dev server on `http://localhost:3000`. Compose does **not** migrate, seed, or own the
+upload directory yet — the run path below supplies those steps (ADR-037; permanent fix awaits approval).
+
+```powershell
+cd backend
+docker compose up -d --build postgres api
+docker compose exec -T api uv run --no-sync alembic upgrade head
+docker compose exec -T api env NIRIKSHAN_SEED_DEMO=force uv run --no-sync python -m app.seed.insert   # demo refresh only
+docker compose exec -T -u root api chown -R appuser:appuser /app/uploads                              # once per fresh volume
+
+cd ..\admin-dashboard
+npm install --no-audit --no-fund
+npm run dev
+```
+
+| Surface | URL / command | Credentials |
+|---|---|---|
+| Dashboard (SSR) | `http://localhost:3000` | `officer.demo@example.com` / `demo1234` (prototype cookie; any valid-shaped login works) |
+| API health / docs | `http://localhost:8000/healthz` · `/docs` | — |
+| API demo login | `POST /api/v1/auth/login` | `ministry@demo.gov.in` / `demo1234` (also state-MP and district-Bhopal officers) |
+| Postgres | `localhost:5432` | compose env (`nirikshan` / `nirikshan`) |
+
+Verified 13/13: health, login, KPIs (28,410 / 214), 144 works, 24 anomalies, W-1014 dossier,
+128 notifications, copilot search, evidence upload/download, decision+activity write, SSR
+login/overview/works. Restore pristine state by rerunning the seed after write tests; restart
+the API to clear versioned read-model caches. On PowerShell 5.1, use `curl.exe` (not
+`Invoke-WebRequest`) to send the SSR `Cookie` header; `/dashboard/works` 307s to its query-string form.
+
+Known gaps until an approved fix:
+1. `docker compose up` alone leaves `/healthz` green but data routes 500 — no Alembic/seed step.
+2. Evidence upload 500s on a fresh volume — root-owned `uploads` volume vs `appuser:10001`.
+
 ## Function call map
 
 ### Dossier (BUILT + extended on 006)

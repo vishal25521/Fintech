@@ -7,9 +7,9 @@ export function GitHubRepositoriesMenu() {
   return (
     <Button
       size="icon"
-      aria-label="Open project repository on GitHub"
+      aria-label="Open GitHub profile"
       nativeButton={false}
-      render={<a href="https://github.com/aditya452007/26102" target="_blank" rel="noreferrer" />}
+      render={<a href="https://github.com/vishal25521" target="_blank" rel="noreferrer" />}
     >
       <SimpleIcon icon={siGithub} className="fill-primary-foreground" />
     </Button>
