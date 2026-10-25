@@ -35,6 +35,7 @@
 
 | ID | Date | Decision | Status | Affects |
 |----|------|----------|--------|----------|
+| ADR-038 | 2026-10-25 | TanStack Start security upgrade for the Vercel block: react-start ^1.168.60 + router-cli ^1.167.46, lock resolved to start-server-core 1.169.45 / router-core 1.171.39 | Accepted | admin-dashboard/package.json, package-lock.json |
 | ADR-037 | 2026-10-25 | Local composed-stack run verified: manual Alembic + seed, runtime `uploads` chown; compose bootstrap gaps recorded, permanent fixes await approval | Accepted | docker-compose.yml, Dockerfile, context/flow.md, context/progress-tracker.md |
 | ADR-036 | 2026-09-24 | District-less polygons resolve to state name + state counts; clicks stay district-only | Accepted | india-geo.ts, overview data.ts/india-risk-map.tsx/route.tsx |
 | ADR-035 | 2026-09-24 | Map empty-states + 144-work sample + full rupee migration (contract, seed, entities, engine, UI, docs); supersedes ADR-034 lane + bumps 010 pageSize 100→200 | Accepted | mplads-schema/mock, overview/*, india-geo, server/mplads, backend seed/db/engine/tests, alembic 0002, all backend docs, Feature_docs 00–05 |
@@ -91,6 +92,16 @@
 ---
 
 ## Decision Entries
+
+### ADR-038: TanStack Start security upgrade clears the Vercel dependency block
+- **Date**: 2026-10-25
+- **Status**: Accepted
+- **Context**: The Vercel build of `main@11cccbb` failed during `npm install` with `403 ... @tanstack/start-server-core@1.169.31 ... CVE-2026-102989`. The lock pinned `@tanstack/react-start@1.168.49` (which pulls vulnerable `start-server-core@1.169.31`), even though `package.json`'s `^1.168.49` range allowed the fixed line. Vercel requires `react-start >= 1.168.60` / `start-server-core >= 1.169.39`.
+- **Options considered**: Deploy with `DANGEROUSLY_DEPLOY_VULNERABLE_TANSTACK_START_XSS=1` (rejected — bypasses a real security gate); bump `react-start` only (rejected — build then failed in nitro with missing `isPromise`/`makeSerovalPlugin`/`createServerHistory` exports because old `router-cli@1.167.33` pinned `router-core@1.171.27` while `react-router@1.170.46` needs 1.171.39); force `router-core` via `overrides` (rejected — masks a version skew instead of fixing its source); bump `react-start` + `router-cli` to aligned latest (chosen).
+- **Decision**: `@tanstack/react-start` → `^1.168.60` (lock resolves 1.169.4, `start-server-core` 1.169.45) and `@tanstack/router-cli` → `^1.167.46` (router-generator 1.167.46 → `router-core` 1.171.39). Regenerated `package-lock.json`; no application source changed.
+- **Why**: This is the smallest vendor-supported version set that clears the block and keeps the whole TanStack graph on compatible internals. Pinning the CLI to its old patch was the hidden source of the hoisted `router-core@1.171.27` that broke the build.
+- **Consequences**: `npm run build` passes end-to-end (client, SSR, nitro `node-server`). Vercel will install `start-server-core@1.169.45` from the lock. `npm audit` still reports unrelated findings (direct `vite@8.2.2`, `zod@4.5.4`, `shadcn`'s nested zod, and transitive dev/build packages) — deliberately left for a separate change. Locally, `npm ci` cannot replace `node_modules` while the dev server holds `lightningcss`'s native binary; stop the dev server or use `npm install` for a local refresh.
+- **Affects**: `admin-dashboard/package.json`, `admin-dashboard/package-lock.json`.
 
 ### ADR-037: Local composed stack verified — manual migrate/seed + runtime uploads chown
 - **Date**: 2026-10-25

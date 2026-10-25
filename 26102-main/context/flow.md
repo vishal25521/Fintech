@@ -156,6 +156,8 @@ reads 404.
 Postgres 16 (`localhost:5432`) + FastAPI (`http://localhost:8000`) from `backend/docker-compose.yml`,
 frontend dev server on `http://localhost:3000`. Compose does **not** migrate, seed, or own the
 upload directory yet — the run path below supplies those steps (ADR-037; permanent fix awaits approval).
+Dependency floor for deploys (ADR-038): Node >= 22.12, `@tanstack/react-start` 1.169.4,
+`@tanstack/start-server-core` 1.169.45, `@tanstack/router-core` 1.171.39 (CVE-2026-102989 fix).
 
 ```powershell
 cd backend
